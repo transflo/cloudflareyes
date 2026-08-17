@@ -11,7 +11,7 @@
 - 默认维护「电信、联通、移动」三条线路；
 - DNSPod 每条线路最多保留 3 条记录，不足时创建、变化时按位置更新、多余时删除；
 - 支持 `DRY_RUN=true` 预览变更；
-- 支持 `RUN_ONCE=true` 单次执行，适合首次验证和定时任务；
+- 支持 `RUN_ONCE=true` 单次执行，适合手动运行或外部定时任务；
 - 使用腾讯云 TC3-HMAC-SHA256 签名调用 DNSPod API；
 - 对 API 错误、重复记录、配置错误和部分线路失败进行明确处理；
 - 容器使用非 root 用户运行。
@@ -49,12 +49,7 @@ DOMAIN=example.com
 SUBDOMAIN=@
 ```
 
-建议第一次运行时使用：
-
-```dotenv
-RUN_ONCE=true
-DRY_RUN=true
-```
+`SUBDOMAIN` 使用 DNSPod 的主机记录填写：`@` 表示根域名 `example.com`；如果要更新 `abc.example.com`，填写 `SUBDOMAIN=abc`，不要填写完整域名。
 
 ### 3. 启动
 
@@ -68,18 +63,7 @@ docker compose up -d --build
 docker compose logs -f cf-dns-updater
 ```
 
-确认预览结果正确后，将 `.env` 改为：
-
-```dotenv
-RUN_ONCE=false
-DRY_RUN=false
-```
-
-然后重新创建更新器：
-
-```bash
-docker compose up -d --build cf-dns-updater
-```
+程序会直接按当前 `.env` 配置持续运行。只有在需要单次执行或预览变更时，才按需设置 `RUN_ONCE=true` 或 `DRY_RUN=true`，无需额外切换部署流程。
 
 ## 配置项
 
@@ -88,12 +72,12 @@ docker compose up -d --build cf-dns-updater
 | `TENCENT_SECRET_ID` | 无 | 是 | 腾讯云 API SecretId |
 | `TENCENT_SECRET_KEY` | 无 | 是 | 腾讯云 API SecretKey |
 | `DOMAIN` | 无 | 是 | DNSPod 中的主域名，例如 `example.com` |
-| `SUBDOMAIN` | `@` | 否 | 主机记录，例如 `@`、`www` |
+| `SUBDOMAIN` | `@` | 否 | DNSPod 主机记录；`@` 表示 `example.com`，填写 `abc` 表示 `abc.example.com`，不要填写完整域名 |
 | `LINES` | `电信,联通,移动` | 否 | 要同步的线路，逗号分隔，必须匹配 DNSPod 线路名 |
 | `MAX_IPS_PER_LINE` | `3` | 否 | 每条线路最多维护的 IP 数量；默认只同步页面排名前 3 个 |
 | `INTERVAL_MINUTES` | `10` | 否 | 循环运行时的同步间隔，单位为分钟 |
 | `TTL` | `600` | 否 | 新建或修改记录时使用的 TTL，范围为 1–604800 秒 |
-| `DRY_RUN` | `false` | 否 | 只查询并打印变更，不执行创建/修改 |
+| `DRY_RUN` | `false` | 否 | 只查询并打印变更，不执行创建、修改或删除 |
 | `RUN_ONCE` | `false` | 否 | 只执行一轮后退出 |
 | `LOG_LEVEL` | `INFO` | 否 | `DEBUG`、`INFO`、`WARNING` 或 `ERROR` |
 | `HTTP_TIMEOUT` | `90` | 否 | HTTP 请求超时时间，单位为秒 |
@@ -191,14 +175,13 @@ docker compose up -d --build
 docker compose logs -f cf-dns-updater
 ~~~
 
-首次验证建议在 `.env` 中设置 `RUN_ONCE=true` 和 `DRY_RUN=true`。确认日志和线路匹配后，再改为循环运行并关闭 DRY-RUN。
+如需使用 Compose 做单次验证或预览，可按需在 `.env` 中设置 `RUN_ONCE=true` 或 `DRY_RUN=true`。
 
 ## 安全建议
 
 - 不要把 `.env`、`TENCENT_SECRET_KEY` 或真实 API 响应提交到 Git；
 - 使用权限尽可能小的腾讯云 API 子账号；
-- 生产环境先使用 `DRY_RUN=true` 验证线路名称和目标域名；
-- 建议为首次部署保留 `RUN_ONCE=true`，确认日志无误后再启用循环模式；
+- 需要确认变更计划时可使用 `DRY_RUN=true`，它不会创建、修改或删除 DNS 记录；
 - FlareSolverr 端口只应暴露在可信网络中。
 
 ## 项目文件
