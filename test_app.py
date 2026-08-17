@@ -3,7 +3,7 @@ import hmac
 import json
 import os
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import app
 
@@ -69,21 +69,60 @@ class SignTc3Tests(unittest.TestCase):
 
 
 class SyncLineTests(unittest.TestCase):
-    def test_does_not_fall_back_to_another_record(self):
+    def test_creates_only_the_first_three_ips(self):
         with patch.object(app, "describe_record_list", return_value=[{"Name": "other"}]), patch.object(
             app, "create_record"
         ) as create:
-            result = app.sync_line("www", "电信", "1.2.3.4")
-        self.assertIn("已创建", result)
-        create.assert_called_once_with("www", "电信", "1.2.3.4")
+            result = app.sync_line("www", "电信", ["1.2.3.4", "1.2.3.5", "1.2.3.6", "1.2.3.7"])
+        self.assertEqual(create.call_count, 3)
+        create.assert_has_calls(
+            [
+                call("www", "电信", "1.2.3.4"),
+                call("www", "电信", "1.2.3.5"),
+                call("www", "电信", "1.2.3.6"),
+            ]
+        )
+        self.assertIn("已创建第3个位置", result)
+
+    def test_updates_positions_and_deletes_extras(self):
+        records = [
+            {"Name": "www", "Line": "电信", "RecordId": 13, "Value": "3.3.3.0"},
+            {"Name": "www", "Line": "电信", "RecordId": 11, "Value": "1.1.1.0"},
+            {"Name": "www", "Line": "电信", "RecordId": 12, "Value": "2.2.2.2"},
+            {"Name": "www", "Line": "电信", "RecordId": 14, "Value": "9.9.9.9"},
+            {"Name": "other", "Line": "电信", "RecordId": 99, "Value": "8.8.8.8"},
+        ]
+        with patch.object(app, "describe_record_list", return_value=records), patch.object(
+            app, "modify_record"
+        ) as modify, patch.object(app, "delete_record") as delete:
+            result = app.sync_line("www", "电信", ["1.1.1.1", "2.2.2.2", "3.3.3.3"])
+        modify.assert_has_calls(
+            [
+                call(11, "www", "电信", "1.1.1.1"),
+                call(13, "www", "电信", "3.3.3.3"),
+            ]
+        )
+        delete.assert_called_once_with(14)
+        self.assertIn("已删除多余位置", result)
 
     def test_dry_run_does_not_modify(self):
         with patch.object(app, "DRY_RUN", True), patch.object(
-            app, "describe_record_list", return_value=[{"Name": "www", "Line": "电信", "RecordId": 1, "Value": "1.1.1.1"}]
-        ), patch.object(app, "modify_record") as modify:
-            result = app.sync_line("www", "电信", "2.2.2.2")
+            app,
+            "describe_record_list",
+            return_value=[
+                {"Name": "www", "Line": "电信", "RecordId": 1, "Value": "1.1.1.1"},
+                {"Name": "www", "Line": "电信", "RecordId": 2, "Value": "2.2.2.2"},
+                {"Name": "www", "Line": "电信", "RecordId": 3, "Value": "old"},
+                {"Name": "www", "Line": "电信", "RecordId": 4, "Value": "extra"},
+            ],
+        ), patch.object(app, "modify_record") as modify, patch.object(
+            app, "create_record"
+        ) as create, patch.object(app, "delete_record") as delete:
+            result = app.sync_line("www", "电信", ["1.1.1.1", "2.2.2.2", "3.3.3.3"])
         self.assertIn("DRY-RUN", result)
         modify.assert_not_called()
+        create.assert_not_called()
+        delete.assert_not_called()
 
 
 class Tc3RequestTests(unittest.TestCase):

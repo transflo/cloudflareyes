@@ -14,15 +14,24 @@ HTML = """
 <html><body><table>
 <tr><th>排名</th><th>线路</th><th>IP 地址</th></tr>
 <tr><td>1</td><td>电信</td><td>1.2.3.4</td></tr>
-<tr><td>2</td><td>联通</td><td>5.6.7.8</td></tr>
-<tr><td>3</td><td>移动</td><td>9.8.7.6</td></tr>
+<tr><td>2</td><td>电信</td><td>1.2.3.5</td></tr>
+<tr><td>3</td><td>电信</td><td>1.2.3.6</td></tr>
+<tr><td>4</td><td>联通</td><td>5.6.7.8</td></tr>
+<tr><td>5</td><td>联通</td><td>5.6.7.9</td></tr>
+<tr><td>6</td><td>联通</td><td>5.6.7.10</td></tr>
+<tr><td>7</td><td>移动</td><td>9.8.7.6</td></tr>
+<tr><td>8</td><td>移动</td><td>9.8.7.5</td></tr>
+<tr><td>9</td><td>移动</td><td>9.8.7.4</td></tr>
 </table></body></html>
 """
 
-# 电信已有旧 IP，联通没有记录，移动已经是目标 IP；三种同步路径都会被覆盖。
-RECORDS: dict[str, dict] = {
-    "电信": {"RecordId": 101, "Name": "@", "Line": "电信", "Value": "1.1.1.1"},
-    "移动": {"RecordId": 103, "Name": "@", "Line": "移动", "Value": "9.8.7.6"},
+# 电信覆盖更新和删除多余记录，联通覆盖创建，移动覆盖更新和补齐。
+RECORDS: dict[int, dict] = {
+    101: {"RecordId": 101, "Name": "@", "Line": "电信", "Value": "1.1.1.1"},
+    102: {"RecordId": 102, "Name": "@", "Line": "电信", "Value": "1.2.3.5"},
+    104: {"RecordId": 104, "Name": "@", "Line": "电信", "Value": "9.9.9.9"},
+    105: {"RecordId": 105, "Name": "@", "Line": "电信", "Value": "8.8.8.8"},
+    103: {"RecordId": 103, "Name": "@", "Line": "移动", "Value": "9.8.7.6"},
 }
 NEXT_RECORD_ID = 200
 LOCK = threading.Lock()
@@ -78,8 +87,12 @@ class Handler(BaseHTTPRequestHandler):
                     "Line": request.get("RecordLine", ""),
                     "Value": request.get("Value", ""),
                 }
-                RECORDS[record["Line"]] = record
+                RECORDS[record["RecordId"]] = record
                 self._json({"Response": {"RecordId": NEXT_RECORD_ID}})
+            elif action == "DeleteRecord":
+                record_id = request.get("RecordId")
+                RECORDS.pop(record_id, None)
+                self._json({"Response": {}})
             else:
                 self._json({"Response": {"Error": {"Code": "UnsupportedAction", "Message": action}}}, 400)
 

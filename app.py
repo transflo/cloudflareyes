@@ -65,6 +65,7 @@ TENCENT_SECRET_KEY = os.getenv("TENCENT_SECRET_KEY", "").strip()
 DOMAIN = os.getenv("DOMAIN", "").strip()
 SUBDOMAIN = os.getenv("SUBDOMAIN", "@").strip() or "@"
 LINES = list(dict.fromkeys(x.strip() for x in os.getenv("LINES", "电信,联通,移动").split(",") if x.strip()))
+MAX_IPS_PER_LINE = _env_int("MAX_IPS_PER_LINE", 3)
 TTL = _env_int("TTL", 600)
 
 DNSPOD_HOST = "dnspod.tencentcloudapi.com"
@@ -114,6 +115,8 @@ def validate_config() -> None:
         raise ConfigurationError(f"缺少必要环境变量: {', '.join(missing)}")
     if not LINES:
         raise ConfigurationError("LINES 至少需要包含一条线路")
+    if MAX_IPS_PER_LINE <= 0:
+        raise ConfigurationError("MAX_IPS_PER_LINE 必须大于 0")
     if INTERVAL_MINUTES <= 0:
         raise ConfigurationError("INTERVAL_MINUTES 必须大于 0")
     if HTTP_TIMEOUT <= 0:
@@ -396,49 +399,93 @@ def create_record(subdomain: str, line: str, value: str) -> None:
     )
 
 
-def sync_line(subdomain: str, line: str, ip: str) -> str:
-    """把某条线路的 A 记录更新到指定 IP，返回状态描述。"""
+def delete_record(record_id: str | int) -> None:
+    """删除 DNSPod 中的一条解析记录。"""
+    tc3_request(
+        "DeleteRecord",
+        {"Domain": DOMAIN, "RecordId": record_id},
+    )
+
+
+def _record_sort_key(record: Mapping[str, Any]) -> tuple[int, int | str]:
+    """按 RecordId 稳定排序，作为 DNSPod 多记录的位置顺序。"""
+    record_id = record.get("RecordId")
     try:
-        address = ipaddress.ip_address(ip)
-    except ValueError as exc:
-        raise ValueError(f"无效 IP 地址: {ip!r}") from exc
-    if address.version != 4:
-        raise ValueError(f"仅支持 IPv4 A 记录: {ip!r}")
+        return (0, int(record_id))
+    except (TypeError, ValueError):
+        return (1, str(record_id))
+
+
+def sync_line(subdomain: str, line: str, ips: list[str]) -> str:
+    """让某条线路只保留目标 IP 列表，并按记录位置更新/创建/删除。"""
+    target_ips = list(dict.fromkeys(ip.strip() for ip in ips if ip and ip.strip()))[:MAX_IPS_PER_LINE]
+    if not target_ips:
+        raise ValueError(f"线路「{line}」至少需要一个 IPv4")
+    for ip in target_ips:
+        try:
+            address = ipaddress.ip_address(ip)
+        except ValueError as exc:
+            raise ValueError(f"无效 IP 地址: {ip!r}") from exc
+        if address.version != 4:
+            raise ValueError(f"仅支持 IPv4 A 记录: {ip!r}")
 
     records = describe_record_list(subdomain, line)
-    matches = [
-        record
-        for record in records
-        if str(record.get("Name", "")).lower() == subdomain.lower()
-        and str(record.get("Line", "")) == line
-    ]
-    if len(matches) > 1:
-        raise RuntimeError(f"线路「{line}」找到多个同名 A 记录，拒绝自动选择以避免误改")
-    record = matches[0] if matches else None
+    matches = sorted(
+        [
+            record
+            for record in records
+            if str(record.get("Name", "")).lower() == subdomain.lower()
+            and str(record.get("Line", "")) == line
+        ],
+        key=_record_sort_key,
+    )
+    for record in matches:
+        if record.get("RecordId") is None:
+            raise RuntimeError(f"线路「{line}」的记录缺少 RecordId")
 
-    if record is None:
+    retained = matches[: len(target_ips)]
+    extras = matches[len(target_ips) :]
+    actions: list[str] = []
+
+    for position, ip in enumerate(target_ips, start=1):
+        if position <= len(retained):
+            record = retained[position - 1]
+            record_id = record["RecordId"]
+            current = str(record.get("Value", "")).strip()
+            if current == ip:
+                continue
+            if DRY_RUN:
+                actions.append(
+                    f"DRY-RUN: 将修改第{position}个位置 {current or '<空值'} -> {ip}"
+                )
+            else:
+                modify_record(record_id, subdomain, line, ip)
+                actions.append(f"已更新第{position}个位置 {current or '<空值'} -> {ip}")
+        elif DRY_RUN:
+            actions.append(f"DRY-RUN: 将创建第{position}个位置 -> {ip}")
+        else:
+            try:
+                create_record(subdomain, line, ip)
+            except TencentAPIError as exc:
+                if exc.code == MUST_ADD_DEFAULT_LINE or MUST_ADD_DEFAULT_LINE in str(exc):
+                    raise RuntimeError(
+                        f"{exc}（提示：DNSPod 要求先存在「默认」线路的解析记录，才能添加分线路记录）"
+                    ) from exc
+                raise
+            actions.append(f"已创建第{position}个位置 -> {ip}")
+
+    for record in extras:
+        record_id = record["RecordId"]
+        current = str(record.get("Value", "")).strip()
         if DRY_RUN:
-            return f"DRY-RUN: 将创建 {subdomain}/{line} -> {ip}"
-        try:
-            create_record(subdomain, line, ip)
-        except TencentAPIError as exc:
-            if exc.code == MUST_ADD_DEFAULT_LINE or MUST_ADD_DEFAULT_LINE in str(exc):
-                raise RuntimeError(
-                    f"{exc}（提示：DNSPod 要求先存在「默认」线路的解析记录，才能添加分线路记录）"
-                ) from exc
-            raise
-        return f"已创建 {subdomain}/{line} -> {ip}"
+            actions.append(f"DRY-RUN: 将删除多余位置 {current or '<空值'}")
+        else:
+            delete_record(record_id)
+            actions.append(f"已删除多余位置 {current or '<空值'}")
 
-    record_id = record.get("RecordId")
-    if record_id is None:
-        raise RuntimeError(f"线路「{line}」的记录缺少 RecordId")
-    current = str(record.get("Value", "")).strip()
-    if current == ip:
-        return f"{subdomain}/{line} 已是 {ip}，无需更新"
-    if DRY_RUN:
-        return f"DRY-RUN: 将修改 {subdomain}/{line} {current or '<空值'} -> {ip}"
-    modify_record(record_id, subdomain, line, ip)
-    return f"已更新 {subdomain}/{line} {current or '<空值'} -> {ip}"
+    if not actions:
+        return f"{subdomain}/{line} 已有 {len(target_ips)} 个目标 IP，无需更新"
+    return f"{subdomain}/{line}: " + "; ".join(actions)
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +501,13 @@ def run_once() -> None:
     ips_by_line = parse_ips(html)
     log.info("页面解析结果：%s", ", ".join(f"{line}({len(ips)}个)" for line, ips in ips_by_line.items()))
     log.info(
-        "各线路最优 IP：%s",
-        ", ".join(f"{line}={ips_by_line[line][0]}" for line in LINES if line in ips_by_line),
+        "各线路前%d名 IP：%s",
+        MAX_IPS_PER_LINE,
+        ", ".join(
+            f"{line}={','.join(ips_by_line[line][:MAX_IPS_PER_LINE])}"
+            for line in LINES
+            if line in ips_by_line
+        ),
     )
 
     errors: list[str] = []
@@ -467,7 +519,7 @@ def run_once() -> None:
             log.warning("%s，跳过", message)
             continue
         try:
-            log.info(sync_line(SUBDOMAIN, line, ips[0]))
+            log.info(sync_line(SUBDOMAIN, line, ips[:MAX_IPS_PER_LINE]))
         except Exception as exc:  # 单条线路失败不影响其它线路，但最终要让本轮可观测为失败。
             errors.append(f"{line}: {exc}")
             log.error("线路「%s」更新失败：%s", line, exc)
