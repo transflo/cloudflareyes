@@ -1,0 +1,22 @@
+# 中国大陆网络加速覆盖文件。
+#
+# 用法：
+#   # 镜像模式（拉取加速）
+#   docker compose -f docker-compose.yml -f docker-compose.china.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.china.yml up -d
+#
+#   # 本地构建（pip 走国内源）
+#   docker compose -f docker-compose.yml -f docker-compose.china.yml build \
+#     --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+#   docker compose -f docker-compose.yml -f docker-compose.china.yml up -d
+#
+# 说明：公共镜像站可能随时变动，失效时请更换为当前可用的加速地址。
+services:
+  flaresolverr:
+    # ghcr.io 国内代理（南京大学镜像站，实测可用）
+    image: ghcr.nju.edu.cn/flaresolverr/flaresolverr:latest
+
+  cf-dns-updater:
+    # Docker Hub 加速：通过 DaoCloud 代理拉取已发布的镜像。
+    # 镜像发布到 Docker Hub 后即可直接使用；未发布前会退化为本地构建。
+    image: docker.m.daocloud.io/transflo/cloudflareyes:latest

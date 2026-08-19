@@ -104,6 +104,58 @@ DRY_RUN=false
 | 停止并删除容器 | `docker compose down` |
 | 连同网络一起删除 | `docker compose down -v` |
 
+## 中国大陆网络加速（拉取 / 构建太慢时）
+
+默认镜像来自 Docker Hub / ghcr.io，在国内拉取可能很慢。提供以下三种方式：
+
+### 方式一：使用内置加速覆盖文件（推荐）
+
+仓库提供 `docker-compose.china.yml`，会把 FlareSolverr 换成 ghcr 国内代理、更新器换成 Docker Hub 加速地址：
+
+```bash
+# 镜像模式（拉取加速）
+docker compose -f docker-compose.yml -f docker-compose.china.yml pull
+docker compose -f docker-compose.yml -f docker-compose.china.yml up -d
+
+# 本地构建（pip 也走国内源）
+docker compose -f docker-compose.yml -f docker-compose.china.yml build \
+  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+docker compose -f docker-compose.yml -f docker-compose.china.yml up -d
+```
+
+当前覆盖内容（以下地址均为实测可用，但公共镜像站可能随时变动）：
+
+| 镜像 | 默认地址 | 加速地址 |
+|---|---|---|
+| FlareSolverr | `ghcr.io/flaresolverr/flaresolverr` | `ghcr.nju.edu.cn/flaresolverr/flaresolverr`（南京大学镜像站） |
+| 更新器 | `transflo/cloudflareyes` | `docker.m.daocloud.io/transflo/cloudflareyes`（DaoCloud 代理，镜像发布后可用） |
+
+### 方式二：配置 Docker 镜像加速器（一劳永逸）
+
+在 Docker 守护进程配置 `registry-mirrors`：
+
+- 普通 Docker（需要 root）：编辑 `/etc/docker/daemon.json` 后重启
+- rootless Docker：编辑 `~/.config/docker/daemon.json` 后执行 `systemctl --user restart docker`
+
+```json
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://docker.1ms.run"
+  ]
+}
+```
+
+注意：公共加速器随时可能失效；腾讯云 / 阿里云服务器建议优先使用云厂商提供的私有加速地址。
+
+### 方式三：构建时使用国内 pip 源
+
+Dockerfile 支持 `PIP_INDEX_URL` 构建参数：
+
+```bash
+docker build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -t transflo/cloudflareyes:latest .
+```
+
 ## 不使用仓库文件？手动编写 compose 也可以
 
 如果不想 clone 整个仓库，把下面内容保存为 `docker-compose.yml`，再按第 3 步创建 `.env`：
