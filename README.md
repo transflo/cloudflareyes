@@ -1,40 +1,28 @@
-# Cloudflare 优选 IPv4 -> DNSPod 线路解析自动更新器
+# Cloudflare 优选 IP → DNSPod 自动更新器
 
-自动抓取 Cloudflare 优选 IPv4，并将每条线路排名前 3 的 IP 同步到腾讯云 DNSPod 的 A 记录。
-适合部署在 Docker / Docker Compose 中定时运行。
+自动抓取 Cloudflare 优选 IP 页面，把「电信 / 联通 / 移动」每条线路排名前 3 的 IPv4 自动同步到腾讯云 DNSPod 的 A 记录。定时运行、全自动，IP 变化无需人工处理。
 
-## 功能
+- 每 10 分钟自动抓取一次优选 IP（可用 `INTERVAL_MINUTES` 调整）
+- 自动 **新增 / 修改 / 删除** DNS 记录，保持每条线路只有目标 IP
+- 页面数据不足时不填充虚假地址，多余旧记录会被清理
+- 支持 `DRY_RUN` 预览变更、`RUN_ONCE` 单次执行
+- 容器内以非 root 用户运行，`.env` 密钥不会进入镜像
 
-- 通过 [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) 获取目标页面；
-- 自动解析页面中的线路和 IPv4，并保留页面排序；
-- 默认取每个运营商排名前 3 的 IPv4；
-- 默认维护「电信、联通、移动」三条线路；
-- DNSPod 每条线路最多保留 3 条记录，不足时创建、变化时按位置更新、多余时删除；
-- 支持 `DRY_RUN=true` 预览变更；
-- 支持 `RUN_ONCE=true` 单次执行，适合手动运行或外部定时任务；
-- 使用腾讯云 TC3-HMAC-SHA256 签名调用 DNSPod API；
-- 对 API 错误、重复记录、配置错误和部分线路失败进行明确处理；
-- 容器使用非 root 用户运行。
+## 快速开始（Docker Compose）
 
-## 工作流程
+### 1. 准备
 
-```text
-FlareSolverr
-     |
-     v
-目标页面 -> 解析线路/IPv4 -> 选择每条线路前 3 个 IP
-                                            |
-                                            v
-                         DNSPod Describe / Create / Modify / Delete
+- 安装 Docker 与 Docker Compose（Compose v2），检查：`docker compose version`
+- 在 [腾讯云控制台](https://console.cloud.tencent.com/cam/capi) 创建 API 密钥（SecretId / SecretKey），并确认账号拥有目标域名的 DNSPod 解析管理权限
+
+### 2. 获取项目文件
+
+```bash
+git clone https://github.com/transflo/cloudflareyes.git
+cd cloudflareyes
 ```
 
-## 快速开始
-
-### 1. 准备 DNSPod API 密钥
-
-在腾讯云控制台创建 API 密钥，并确保账号拥有目标域名的 DNSPod 解析管理权限。
-
-### 2. 创建配置文件
+### 3. 创建并填写配置
 
 ```bash
 cp .env.example .env
@@ -49,36 +37,104 @@ DOMAIN=example.com
 SUBDOMAIN=@
 ```
 
-`SUBDOMAIN` 使用 DNSPod 的主机记录填写：`@` 表示根域名 `example.com`；如果要更新 `abc.example.com`，填写 `SUBDOMAIN=abc`，不要填写完整域名。
+- `SUBDOMAIN`：`@` 表示根域名 `example.com`；要更新 `abc.example.com` 就填 `abc`，不要写完整域名
+- `LINES`：要维护的线路，默认 `电信,联通,移动`，必须与 DNSPod 线路名完全一致
 
-### 3. 启动
+### 4. 启动
+
+**方式 A（推荐）：使用 Docker Hub 镜像**
+
+镜像已发布到 Docker Hub（`transflo/cloudflareyes`），无需本地构建：
+
+```bash
+docker compose pull cf-dns-updater
+docker compose up -d
+```
+
+**方式 B：本地构建镜像**
 
 ```bash
 docker compose up -d --build
 ```
 
-查看日志：
+两种方式都会启动两个容器：
+
+| 容器 | 作用 | 端口 |
+|---|---|---|
+| `flaresolverr` | 绕过目标页面的人机校验 | 仅本机 `127.0.0.1:8191` |
+| `cf-dns-updater` | 抓取、解析并同步 DNSPod | 无 |
+
+### 5. 查看与验证
 
 ```bash
+docker compose ps                  # 两个容器都应为 Up
 docker compose logs -f cf-dns-updater
 ```
 
-程序会直接按当前 `.env` 配置持续运行。只有在需要单次执行或预览变更时，才按需设置 `RUN_ONCE=true` 或 `DRY_RUN=true`，无需额外切换部署流程。
+**首次使用建议先预览再生效**：在 `.env` 中临时设置
 
-### 4. 使用 Docker Hub 镜像（可选）
-
-项目发布到 Docker Hub 后，也可以直接用现成镜像部署，无需本地构建：
-
-```bash
-# 在 .env 中指定镜像（或直接修改 docker-compose.yml 的 image: 行）
-DOCKER_IMAGE=<DockerHub用户名>/cloudflareyes:latest
-
-docker compose pull cf-dns-updater
-docker compose up -d
+```dotenv
+RUN_ONCE=true
+DRY_RUN=true
 ```
 
-如果确定只使用镜像、不在本地构建，也可以把 `docker-compose.yml` 中 `cf-dns-updater` 服务的 `build: .` 行删掉，只保留 `image:`。
+然后重启并查看日志：
 
+```bash
+docker compose up -d
+docker compose logs cf-dns-updater
+```
+
+日志会打印 `DRY-RUN: 将创建/修改/删除…` 而不会真正改动 DNS。确认无误后改回：
+
+```dotenv
+RUN_ONCE=false
+DRY_RUN=false
+```
+
+再次执行 `docker compose up -d` 即可进入定时循环。
+
+### 6. 日常运维
+
+| 操作 | 命令 |
+|---|---|
+| 查看日志 | `docker compose logs -f cf-dns-updater` |
+| 升级到最新镜像 | `docker compose pull && docker compose up -d` |
+| 手动跑一次 | 在 `.env` 设 `RUN_ONCE=true`，`docker compose up -d`，完成后改回 |
+| 停止并删除容器 | `docker compose down` |
+| 连同网络一起删除 | `docker compose down -v` |
+
+## 不使用仓库文件？手动编写 compose 也可以
+
+如果不想 clone 整个仓库，把下面内容保存为 `docker-compose.yml`，再按第 3 步创建 `.env`：
+
+```yaml
+services:
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8191:8191"
+
+  cf-dns-updater:
+    image: transflo/cloudflareyes:latest
+    container_name: cf-dns-updater
+    restart: unless-stopped
+    depends_on:
+      - flaresolverr
+    env_file:
+      - .env
+    environment:
+      - FLARESOLVERR_URL=http://flaresolverr:8191
+      - TARGET_URL=https://api.uouin.com/cloudflare.html
+```
+
+然后启动：
+
+```bash
+docker compose up -d
+```
 
 ## 配置项
 
@@ -87,164 +143,79 @@ docker compose up -d
 | `TENCENT_SECRET_ID` | 无 | 是 | 腾讯云 API SecretId |
 | `TENCENT_SECRET_KEY` | 无 | 是 | 腾讯云 API SecretKey |
 | `DOMAIN` | 无 | 是 | DNSPod 中的主域名，例如 `example.com` |
-| `SUBDOMAIN` | `@` | 否 | DNSPod 主机记录；`@` 表示 `example.com`，填写 `abc` 表示 `abc.example.com`，不要填写完整域名 |
-| `LINES` | `电信,联通,移动` | 否 | 要同步的线路，逗号分隔，必须匹配 DNSPod 线路名 |
-| `MAX_IPS_PER_LINE` | `3` | 否 | 每条线路最多维护的 IP 数量；默认只同步页面排名前 3 个 |
-| `INTERVAL_MINUTES` | `10` | 否 | 循环运行时的同步间隔，单位为分钟 |
-| `TTL` | `600` | 否 | 新建或修改记录时使用的 TTL，范围为 1–604800 秒 |
-| `DRY_RUN` | `false` | 否 | 只查询并打印变更，不执行创建、修改或删除 |
+| `SUBDOMAIN` | `@` | 否 | DNSPod 主机记录；`@` 表示 `example.com`，填 `abc` 表示 `abc.example.com` |
+| `LINES` | `电信,联通,移动` | 否 | 要同步的线路，逗号分隔，必须与 DNSPod 线路名一致 |
+| `MAX_IPS_PER_LINE` | `3` | 否 | 每条线路最多维护的 IP 数量 |
+| `INTERVAL_MINUTES` | `10` | 否 | 循环运行时的同步间隔（分钟） |
+| `TTL` | `600` | 否 | 新建/修改记录时的 TTL，范围 1–604800 秒 |
+| `DRY_RUN` | `false` | 否 | 只打印将要执行的变更，不创建/修改/删除 |
 | `RUN_ONCE` | `false` | 否 | 只执行一轮后退出 |
-| `LOG_LEVEL` | `INFO` | 否 | `DEBUG`、`INFO`、`WARNING` 或 `ERROR` |
-| `HTTP_TIMEOUT` | `90` | 否 | HTTP 请求超时时间，单位为秒 |
-| `FLARE_MAX_TIMEOUT` | `60000` | 否 | FlareSolverr 单次浏览器请求最大超时时间，单位为毫秒 |
+| `LOG_LEVEL` | `INFO` | 否 | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `HTTP_TIMEOUT` | `90` | 否 | HTTP 请求超时（秒） |
+| `FLARE_MAX_TIMEOUT` | `60000` | 否 | FlareSolverr 单次浏览器请求最大超时（毫秒） |
 | `FLARESOLVERR_URL` | `http://flaresolverr:8191` | 否 | FlareSolverr 服务地址 |
-| `DNSPOD_ENDPOINT` | `https://dnspod.tencentcloudapi.com` | 否 | DNSPod API 地址；生产环境不要修改 |
-| `DNSPOD_ALLOW_HTTP` | `false` | 否 | 仅本地集成测试使用；设为 `true` 才允许 `DNSPOD_ENDPOINT` 使用 http（生产环境请保持默认） |
+| `DNSPOD_ENDPOINT` | `https://dnspod.tencentcloudapi.com` | 否 | DNSPod API 地址，生产环境不要修改 |
+| `DNSPOD_ALLOW_HTTP` | `false` | 否 | 仅本地集成测试使用；`true` 才允许 `DNSPOD_ENDPOINT` 使用 http |
 | `TARGET_URL` | `https://api.uouin.com/cloudflare.html` | 否 | 优选 IP 页面地址 |
-| `DOCKER_IMAGE` | `transflo/cloudflareyes:latest` | 否 | compose 使用的镜像名；从 Docker Hub 拉取时改为 `<你的用户名>/cloudflareyes:latest` |
+| `DOCKER_IMAGE` | `transflo/cloudflareyes:latest` | 否 | compose 使用的镜像名（仅使用镜像部署时需要关注） |
 
 ## DNSPod 线路说明
 
-DNSPod 的分线路记录通常要求同一主机记录先存在一条「默认」线路记录。
-如果创建线路记录时收到 `MustAddDefaultLineFirst`，请先在 DNSPod 控制台为相同的 `DOMAIN/SUBDOMAIN` 创建默认线路记录，再重新运行。
-
-程序只处理精确匹配 `DOMAIN/SUBDOMAIN/线路` 的 A 记录，并按 `RecordId` 排序作为 3 个 DNS 位置。每轮同步后，该线路只保留目标列表中的记录；页面数据不足 3 个有效 IPv4 时不会填充虚假地址，但会删除多余的旧记录。
+- DNSPod 的分线路记录通常要求同一主机记录先存在一条「默认」线路记录。如果创建线路记录时收到 `MustAddDefaultLineFirst`，请先在 DNSPod 控制台为相同的 `DOMAIN/SUBDOMAIN` 创建默认线路记录，再重新运行。
+- 程序只处理精确匹配 `DOMAIN/SUBDOMAIN/线路` 的 A 记录，并按 `RecordId` 排序作为 3 个 DNS 位置。
+- 每轮同步后，该线路只保留目标列表中的记录；页面数据不足 3 个有效 IPv4 时不会填充虚假地址，但会删除多余的旧记录。
 
 ## 安全说明
 
-- `docker-compose.yml` 中 FlareSolverr 只绑定 `127.0.0.1`，不会向局域网/公网暴露这个无鉴权的浏览器代理服务；如使用其它部署方式，请勿把 `8191` 端口发布到公网。
-- `DNSPOD_ENDPOINT` 强制使用 HTTPS，避免腾讯云 API 签名头在网络上明文传输；本地 mock 测试需显式设置 `DNSPOD_ALLOW_HTTP=true`。
-- 程序只接受公网 IPv4（自动过滤内网、回环、链路本地、保留/组播地址），避免第三方页面把非公网地址写入 DNS。
-- 数据源（默认 `api.uouin.com`）是第三方页面，页面被篡改即等同于攻击者可以改写你的解析记录，请确认来源可信并关注页面变化。
+- FlareSolverr 是无鉴权的浏览器代理服务，compose 已将其限制为只监听 `127.0.0.1`；请勿把 `8191` 端口发布到公网。
+- `DNSPOD_ENDPOINT` 强制使用 HTTPS，避免腾讯云 API 签名头明文传输。
+- 程序只接受公网 IPv4，自动过滤内网、回环、链路本地、保留/组播地址。
+- 数据源（默认 `api.uouin.com`）是第三方页面；页面被篡改等同于攻击者可以改写你的解析记录，请确认来源可信。
+- 不要把 `.env` 或真实密钥提交到 Git。
 
-## 发布到 Docker Hub
+## 常见问题
 
-### 手动发布
+**Q：日志提示 `MustAddDefaultLineFirst`？**
+A：DNSPod 要求先存在「默认」线路记录。到 DNSPod 控制台为该域名/主机记录添加一条默认线路的 A 记录，再重新运行。
 
-```bash
-docker build -t <DockerHub用户名>/cloudflareyes:latest .
-docker tag <DockerHub用户名>/cloudflareyes:latest <DockerHub用户名>/cloudflareyes:v1.0.0
-docker login        # 推荐使用 Access Token，而不是账号密码
-docker push <DockerHub用户名>/cloudflareyes:latest
-docker push <DockerHub用户名>/cloudflareyes:v1.0.0
-```
+**Q：某条线路一直没有更新？**
+A：检查 `LINES` 里的线路名是否与 DNSPod 线路名完全一致；页面没有该线路的数据时程序会跳过并在日志中提示。
 
-### 自动发布（GitHub Actions）
+**Q：日志显示“无需更新”正常吗？**
+A：正常。说明页面排名 IP 与当前 DNS 记录一致，程序不会做无意义的修改。
 
-仓库已内置 `.github/workflows/docker-publish.yml`：
+**Q：如何只跑一次而不是循环？**
+A：`.env` 设置 `RUN_ONCE=true` 后重启容器；执行完会自动退出。
 
-- 触发：推送到 `main`、推送 `v*` 标签，或手动运行 `workflow_dispatch`；
-- 使用 Buildx 构建 `linux/amd64` 与 `linux/arm64` 双架构并推送到 Docker Hub；
-- 镜像名 = `${{ secrets.DOCKERHUB_USERNAME }}/cloudflareyes`。
+**Q：更新器容器退出，FlareSolverr 还在？**
+A：`RUN_ONCE=true` 执行完退出是预期行为。正式使用请保持 `RUN_ONCE=false`。
 
-首次使用前需要：
+## 本地开发与测试（贡献者）
 
-1. 在 [Docker Hub](https://hub.docker.com) 创建仓库 `cloudflareyes`；
-2. 在 Docker Hub 账号设置中生成 Access Token；
-3. 在 GitHub 仓库 Settings → Secrets and variables → Actions 中添加：
-   - `DOCKERHUB_USERNAME`：Docker Hub 用户名；
-   - `DOCKERHUB_TOKEN`：上一步生成的 Access Token；
-4. 推送 tag 触发发布：
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-发布完成后即可按「使用 Docker Hub 镜像」一节部署。
-
-## 本地测试
-
-### Python 单元测试
-
-项目不依赖 pytest，直接使用标准库 `unittest`：
+项目不依赖 pytest，使用标准库 `unittest`：
 
 ```bash
 python -m py_compile app.py
 python -m unittest discover -v
 ```
 
-### Docker 构建
+本地 Docker 集成测试使用内置 mock 服务（模拟 FlareSolverr 与 DNSPod），详见 `tests/mock_services.py` 与「Docker 集成测试」相关注释。
+
+## 发布到 Docker Hub（维护者）
+
+### 手动发布
 
 ```bash
-docker build -t cloudflareyes-test .
+docker build -t transflo/cloudflareyes:latest .
+docker tag transflo/cloudflareyes:latest transflo/cloudflareyes:v1.0.0
+docker login          # 推荐使用 Access Token
+docker push transflo/cloudflareyes:latest
+docker push transflo/cloudflareyes:v1.0.0
 ```
 
-### 无真实密钥的 Docker 集成测试
+### 自动发布（GitHub Actions）
 
-应用支持通过 `DNSPOD_ENDPOINT` 指向本地 mock 服务。生产环境不要修改该变量。
-
-下面的测试会验证：
-
-1. 容器可以正常启动；
-2. FlareSolverr 返回的 HTML 能被解析；
-3. DNSPod 的查询、修改、创建和删除流程可以执行；
-4. `RUN_ONCE=true` 能在一轮执行后正常退出。
-
-项目已内置同时模拟 FlareSolverr 和 DNSPod API 的测试服务。在项目根目录启动：
-
-```bash
-# mock 服务监听宿主机 8192 端口
-python tests/mock_services.py
-```
-
-然后运行：
-
-```bash
-docker run --rm \
-  --add-host=host.docker.internal:host-gateway \
-  -e TENCENT_SECRET_ID=test-secret-id \
-  -e TENCENT_SECRET_KEY=test-secret-key \
-  -e DOMAIN=example.com \
-  -e SUBDOMAIN=@ \
-  -e LINES=电信,联通,移动 \
-  -e RUN_ONCE=true \
-  -e DRY_RUN=false \
-  -e FLARESOLVERR_URL=http://host.docker.internal:8192 \
-  -e DNSPOD_ENDPOINT=http://host.docker.internal:8192 \
-  -e DNSPOD_ALLOW_HTTP=true \
-  -e TARGET_URL=https://example.invalid/cloudflare.html \
-  cloudflareyes-test
-```
-
-如果只想确认解析和变更计划，不需要 mock DNSPod 修改接口，可使用：
-
-```bash
-docker run --rm \
-  --add-host=host.docker.internal:host-gateway \
-  -e TENCENT_SECRET_ID=test-secret-id \
-  -e TENCENT_SECRET_KEY=test-secret-key \
-  -e DOMAIN=example.com \
-  -e SUBDOMAIN=@ \
-  -e LINES=电信,联通,移动 \
-  -e RUN_ONCE=true \
-  -e DRY_RUN=true \
-  -e FLARESOLVERR_URL=http://host.docker.internal:8192 \
-  -e DNSPOD_ENDPOINT=http://host.docker.internal:8192 \
-  -e DNSPOD_ALLOW_HTTP=true \
-  -e TARGET_URL=https://example.invalid/cloudflare.html \
-  cloudflareyes-test
-```
-
-上面的命令仍需要先启动 `tests/mock_services.py`，因为应用必须先从 FlareSolverr 获取页面；`DRY_RUN=true` 只会阻止 DNSPod 的创建/修改请求。
-
-### Compose 冒烟测试
-
-正式部署使用 Compose：
-
-~~~bash
-docker compose up -d --build
-docker compose logs -f cf-dns-updater
-~~~
-
-如需使用 Compose 做单次验证或预览，可按需在 `.env` 中设置 `RUN_ONCE=true` 或 `DRY_RUN=true`。
-
-## 安全建议
-
-- 不要把 `.env`、`TENCENT_SECRET_KEY` 或真实 API 响应提交到 Git；
-- 使用权限尽可能小的腾讯云 API 子账号；
-- 需要确认变更计划时可使用 `DRY_RUN=true`，它不会创建、修改或删除 DNS 记录；
-- FlareSolverr 端口只应暴露在可信网络中。
+仓库内置 `.github/workflows/docker-publish.yml`：推送到 `main` 或 `v*` 标签时，自动构建 `linux/amd64`、`linux/arm64` 双架构并推送到 Docker Hub。需要先在 GitHub 仓库配置两个 Secrets：`DOCKERHUB_USERNAME`（`transflo`）与 `DOCKERHUB_TOKEN`（Docker Hub Access Token）。
 
 ## 项目文件
 
@@ -253,6 +224,6 @@ docker compose logs -f cf-dns-updater
 - `Dockerfile`：应用镜像；
 - `docker-compose.yml`：FlareSolverr 与更新器编排；
 - `.env.example`：配置模板；
-- `requirements.txt`：Python 依赖。
-- `tests/mock_services.py`：本地 Docker 集成测试用的 FlareSolverr/DNSPod mock 服务。
-- `.github/workflows/docker-publish.yml`：自动构建并推送到 Docker Hub 的 GitHub Actions 工作流。
+- `requirements.txt`：Python 依赖；
+- `tests/mock_services.py`：本地集成测试用的 FlareSolverr/DNSPod mock 服务；
+- `.github/workflows/docker-publish.yml`：自动发布到 Docker Hub 的 GitHub Actions 工作流。
