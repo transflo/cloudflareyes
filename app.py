@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Cloudflare 优选 IPv4 -> 腾讯云 DNSPod 线路解析自动更新器。
 
 程序流程：
 1. 通过 FlareSolverr 获取目标页面；
 2. 从页面表格中提取各线路的 IPv4，并保留页面排序；
-3. 为每条线路选择第一个 IP，同步到 DNSPod 的 A 记录。
+3. 为每条线路选择排名前 MAX_IPS_PER_LINE（默认 3）的 IPv4，同步到 DNSPod 的 A 记录。
 
 所有运行参数通过环境变量注入，适合本地运行或 Docker 部署。
 """
@@ -22,23 +21,34 @@ import os
 import re
 import sys
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-log = logging.getLogger("cf-dns-updater")
-
 # ---------------------------------------------------------------------------
 # 配置
 # ---------------------------------------------------------------------------
 _CONFIG_PARSE_ERRORS: list[str] = []
+
+
+def _resolve_log_level(default: str = "INFO") -> str:
+    """解析 LOG_LEVEL；非法值记录到配置错误并回退默认级别。"""
+    raw = os.getenv("LOG_LEVEL", default).strip().upper()
+    if isinstance(logging.getLevelName(raw), int):
+        return raw
+    _CONFIG_PARSE_ERRORS.append(f"LOG_LEVEL 必须是 DEBUG/INFO/WARNING/ERROR 之一，实际为 {raw!r}")
+    return default
+
+
+logging.basicConfig(
+    level=_resolve_log_level(),
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger("cf-dns-updater")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -72,10 +82,23 @@ DNSPOD_HOST = "dnspod.tencentcloudapi.com"
 DNSPOD_SERVICE = "dnspod"
 DNSPOD_VERSION = "2021-03-23"
 DNSPOD_ENDPOINT = os.getenv("DNSPOD_ENDPOINT", f"https://{DNSPOD_HOST}").strip()
+DNSPOD_ALLOW_HTTP = os.getenv("DNSPOD_ALLOW_HTTP", "false").strip().lower() in {"1", "true", "yes", "on"}
 MUST_ADD_DEFAULT_LINE = "MustAddDefaultLineFirst"
 
 # 线路名称通常是中文，也允许英文、数字、下划线和连字符；拒绝把表格中的普通文本当成线路。
 LINE_NAME_RE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9][\u4e00-\u9fffA-Za-z0-9 _-]{0,63}$")
+
+# DNS 标签/主机记录校验（IDN 请使用 punycode）。
+_DNS_LABEL = r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+DOMAIN_LABEL_RE = re.compile(rf"^{_DNS_LABEL}$")
+SUBDOMAIN_RE = re.compile(rf"^(?:@|\*|{_DNS_LABEL}(?:\.{_DNS_LABEL})*)$")
+
+
+def _is_valid_domain(domain: str) -> bool:
+    if len(domain) > 253:
+        return False
+    labels = domain.split(".")
+    return bool(labels) and all(DOMAIN_LABEL_RE.fullmatch(label) for label in labels)
 
 
 class ConfigurationError(ValueError):
@@ -115,23 +138,40 @@ def validate_config() -> None:
         raise ConfigurationError(f"缺少必要环境变量: {', '.join(missing)}")
     if not LINES:
         raise ConfigurationError("LINES 至少需要包含一条线路")
+    bad_lines = [line for line in LINES if not LINE_NAME_RE.fullmatch(line)]
+    if bad_lines:
+        raise ConfigurationError(f"LINES 包含非法线路名: {', '.join(repr(line) for line in bad_lines)}")
     if MAX_IPS_PER_LINE <= 0:
         raise ConfigurationError("MAX_IPS_PER_LINE 必须大于 0")
+    if MAX_IPS_PER_LINE > 20:
+        raise ConfigurationError("MAX_IPS_PER_LINE 不能超过 20")
     if INTERVAL_MINUTES <= 0:
         raise ConfigurationError("INTERVAL_MINUTES 必须大于 0")
     if HTTP_TIMEOUT <= 0:
         raise ConfigurationError("HTTP_TIMEOUT 必须大于 0")
     if FLARE_MAX_TIMEOUT <= 0:
         raise ConfigurationError("FLARE_MAX_TIMEOUT 必须大于 0")
+    if FLARE_MAX_TIMEOUT > HTTP_TIMEOUT * 1000:
+        raise ConfigurationError("FLARE_MAX_TIMEOUT(毫秒) 不能超过 HTTP_TIMEOUT(秒) * 1000")
     if not 1 <= TTL <= 604800:
         raise ConfigurationError("TTL 必须在 1 到 604800 秒之间")
     if not DOMAIN or any(ch.isspace() for ch in DOMAIN) or DOMAIN.endswith("."):
         raise ConfigurationError("DOMAIN 必须是非空域名，且不能以句点结尾")
+    if not _is_valid_domain(DOMAIN):
+        raise ConfigurationError(f"DOMAIN 不是合法域名: {DOMAIN!r}")
     if not SUBDOMAIN or any(ch.isspace() for ch in SUBDOMAIN):
         raise ConfigurationError("SUBDOMAIN 不能为空或包含空白字符")
+    if not SUBDOMAIN_RE.fullmatch(SUBDOMAIN):
+        raise ConfigurationError(f"SUBDOMAIN 不是合法的 DNS 主机记录: {SUBDOMAIN!r}")
     _validate_url(FLARESOLVERR_URL, "FLARESOLVERR_URL")
     _validate_url(TARGET_URL, "TARGET_URL")
     _validate_url(DNSPOD_ENDPOINT, "DNSPOD_ENDPOINT")
+
+    endpoint = urlparse(DNSPOD_ENDPOINT)
+    if endpoint.scheme != "https" and not (DNSPOD_ALLOW_HTTP and endpoint.scheme == "http"):
+        raise ConfigurationError("DNSPOD_ENDPOINT 必须是 https:// 地址；仅本地测试可设 DNSPOD_ALLOW_HTTP=true")
+    if endpoint.path not in ("", "/"):
+        raise ConfigurationError("DNSPOD_ENDPOINT 不能包含路径（TC3 签名固定使用 /）")
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +216,7 @@ def fetch_via_flaresolverr(url: str, retries: int = 3) -> str:
             except ValueError as exc:
                 raise RuntimeError(f"FlareSolverr 返回了无效 JSON: {exc}") from exc
             if not isinstance(data, dict):
-                raise RuntimeError("FlareSolverr 返回格式异常")
+                raise TypeError("FlareSolverr 返回格式异常")
 
             if data.get("status") != "ok":
                 last_err = f"FlareSolverr 返回错误: {data.get('message', data)}"
@@ -222,6 +262,17 @@ def _column_indexes(header_cells: list[str]) -> tuple[int, int]:
     return line_index, ip_index
 
 
+def _public_ipv4(value: str) -> ipaddress.IPv4Address | None:
+    """把文本解析为公网 IPv4；内网/回环/保留/非 IPv4 返回 None。"""
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    if address.version != 4 or not address.is_global:
+        return None
+    return address
+
+
 def parse_ips(html: str) -> dict[str, list[str]]:
     """解析页面，返回 ``{线路: [IP, ...]}``，顺序即页面排序。"""
     soup = BeautifulSoup(html, "html.parser")
@@ -241,11 +292,8 @@ def parse_ips(html: str) -> dict[str, list[str]]:
             ip_text = cells[ip_index].strip()
             if not LINE_NAME_RE.fullmatch(line):
                 continue
-            try:
-                address = ipaddress.ip_address(ip_text)
-            except ValueError:
-                continue
-            if address.version != 4:
+            address = _public_ipv4(ip_text)
+            if address is None:
                 continue
             ip = str(address)
             if ip not in result.setdefault(line, []):
@@ -330,13 +378,19 @@ def tc3_request(action: str, params: Mapping[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"API {action} 返回了无效 JSON: {exc}") from exc
 
     if not isinstance(data, dict):
-        raise RuntimeError(f"API {action} 返回格式异常")
+        raise TypeError(f"API {action} 返回格式异常")
     response_data = data.get("Response", data)
     if not isinstance(response_data, dict):
-        raise RuntimeError(f"API {action} 的 Response 格式异常")
+        raise TypeError(f"API {action} 的 Response 格式异常")
     if "Error" in response_data:
         error = response_data.get("Error") or {}
-        raise TencentAPIError(action, error.get("Code"), error.get("Message"))
+        if isinstance(error, dict):
+            code = error.get("Code")
+            message = error.get("Message")
+        else:
+            code = None
+            message = str(error)
+        raise TencentAPIError(action, code, message)
     return response_data
 
 
@@ -348,7 +402,12 @@ def describe_record_list(subdomain: str, line: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     offset = 0
     limit = 100
+    seen_ids: set[Any] = set()
+    pages = 0
     while True:
+        pages += 1
+        if pages > 200:
+            raise RuntimeError("DescribeRecordList 分页超过 200 页，疑似 Offset 未生效，已中止")
         response = tc3_request(
             "DescribeRecordList",
             {
@@ -363,7 +422,11 @@ def describe_record_list(subdomain: str, line: str) -> list[dict[str, Any]]:
         )
         page = response.get("RecordList") or []
         if not isinstance(page, list):
-            raise RuntimeError("API DescribeRecordList 返回的 RecordList 格式异常")
+            raise TypeError("API DescribeRecordList 返回的 RecordList 格式异常")
+        page_ids = [record.get("RecordId") for record in page if isinstance(record, dict)]
+        if page_ids and all(record_id in seen_ids for record_id in page_ids):
+            raise RuntimeError("DescribeRecordList 返回重复页，疑似 Offset 未生效，已中止")
+        seen_ids.update(record_id for record_id in page_ids if record_id is not None)
         records.extend(record for record in page if isinstance(record, dict))
         if len(page) < limit:
             return records
@@ -422,12 +485,8 @@ def sync_line(subdomain: str, line: str, ips: list[str]) -> str:
     if not target_ips:
         raise ValueError(f"线路「{line}」至少需要一个 IPv4")
     for ip in target_ips:
-        try:
-            address = ipaddress.ip_address(ip)
-        except ValueError as exc:
-            raise ValueError(f"无效 IP 地址: {ip!r}") from exc
-        if address.version != 4:
-            raise ValueError(f"仅支持 IPv4 A 记录: {ip!r}")
+        if _public_ipv4(ip) is None:
+            raise ValueError(f"无效或非公网 IPv4 地址: {ip!r}")
 
     records = describe_record_list(subdomain, line)
     matches = sorted(
@@ -456,11 +515,11 @@ def sync_line(subdomain: str, line: str, ips: list[str]) -> str:
                 continue
             if DRY_RUN:
                 actions.append(
-                    f"DRY-RUN: 将修改第{position}个位置 {current or '<空值'} -> {ip}"
+                    f"DRY-RUN: 将修改第{position}个位置 {current or '<空值>'} -> {ip}"
                 )
             else:
                 modify_record(record_id, subdomain, line, ip)
-                actions.append(f"已更新第{position}个位置 {current or '<空值'} -> {ip}")
+                actions.append(f"已更新第{position}个位置 {current or '<空值>'} -> {ip}")
         elif DRY_RUN:
             actions.append(f"DRY-RUN: 将创建第{position}个位置 -> {ip}")
         else:
@@ -478,10 +537,10 @@ def sync_line(subdomain: str, line: str, ips: list[str]) -> str:
         record_id = record["RecordId"]
         current = str(record.get("Value", "")).strip()
         if DRY_RUN:
-            actions.append(f"DRY-RUN: 将删除多余位置 {current or '<空值'}")
+            actions.append(f"DRY-RUN: 将删除多余位置 {current or '<空值>'}")
         else:
             delete_record(record_id)
-            actions.append(f"已删除多余位置 {current or '<空值'}")
+            actions.append(f"已删除多余位置 {current or '<空值>'}")
 
     if not actions:
         return f"{subdomain}/{line} 已有 {len(target_ips)} 个目标 IP，无需更新"

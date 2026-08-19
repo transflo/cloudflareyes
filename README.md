@@ -84,6 +84,7 @@ docker compose logs -f cf-dns-updater
 | `FLARE_MAX_TIMEOUT` | `60000` | 否 | FlareSolverr 单次浏览器请求最大超时时间，单位为毫秒 |
 | `FLARESOLVERR_URL` | `http://flaresolverr:8191` | 否 | FlareSolverr 服务地址 |
 | `DNSPOD_ENDPOINT` | `https://dnspod.tencentcloudapi.com` | 否 | DNSPod API 地址；生产环境不要修改 |
+| `DNSPOD_ALLOW_HTTP` | `false` | 否 | 仅本地集成测试使用；设为 `true` 才允许 `DNSPOD_ENDPOINT` 使用 http（生产环境请保持默认） |
 | `TARGET_URL` | `https://api.uouin.com/cloudflare.html` | 否 | 优选 IP 页面地址 |
 
 ## DNSPod 线路说明
@@ -92,6 +93,13 @@ DNSPod 的分线路记录通常要求同一主机记录先存在一条「默认�
 如果创建线路记录时收到 `MustAddDefaultLineFirst`，请先在 DNSPod 控制台为相同的 `DOMAIN/SUBDOMAIN` 创建默认线路记录，再重新运行。
 
 程序只处理精确匹配 `DOMAIN/SUBDOMAIN/线路` 的 A 记录，并按 `RecordId` 排序作为 3 个 DNS 位置。每轮同步后，该线路只保留目标列表中的记录；页面数据不足 3 个有效 IPv4 时不会填充虚假地址，但会删除多余的旧记录。
+
+## 安全说明
+
+- `docker-compose.yml` 中 FlareSolverr 只绑定 `127.0.0.1`，不会向局域网/公网暴露这个无鉴权的浏览器代理服务；如使用其它部署方式，请勿把 `8191` 端口发布到公网。
+- `DNSPOD_ENDPOINT` 强制使用 HTTPS，避免腾讯云 API 签名头在网络上明文传输；本地 mock 测试需显式设置 `DNSPOD_ALLOW_HTTP=true`。
+- 程序只接受公网 IPv4（自动过滤内网、回环、链路本地、保留/组播地址），避免第三方页面把非公网地址写入 DNS。
+- 数据源（默认 `api.uouin.com`）是第三方页面，页面被篡改即等同于攻击者可以改写你的解析记录，请确认来源可信并关注页面变化。
 
 ## 本地测试
 
@@ -142,6 +150,7 @@ docker run --rm \
   -e DRY_RUN=false \
   -e FLARESOLVERR_URL=http://host.docker.internal:8192 \
   -e DNSPOD_ENDPOINT=http://host.docker.internal:8192 \
+  -e DNSPOD_ALLOW_HTTP=true \
   -e TARGET_URL=https://example.invalid/cloudflare.html \
   cloudflareyes-test
 ```
@@ -160,6 +169,7 @@ docker run --rm \
   -e DRY_RUN=true \
   -e FLARESOLVERR_URL=http://host.docker.internal:8192 \
   -e DNSPOD_ENDPOINT=http://host.docker.internal:8192 \
+  -e DNSPOD_ALLOW_HTTP=true \
   -e TARGET_URL=https://example.invalid/cloudflare.html \
   cloudflareyes-test
 ```
