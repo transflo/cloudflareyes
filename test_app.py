@@ -71,7 +71,7 @@ class FetchViaFlareSolverrTests(unittest.TestCase):
             html = app.fetch_via_flaresolverr("http://example.com", retries=1)
         self.assertIn("<html>", html)
         post.assert_called_once()
-        self.assertEqual(post.call_args.kwargs["json"]["delay"], app.FLARE_DELAY)
+        self.assertEqual(post.call_args.kwargs["json"]["waitInSeconds"], app.FLARE_DELAY)
 
     def test_retries_then_raises(self):
         response = Mock()

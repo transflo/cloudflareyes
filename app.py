@@ -201,9 +201,10 @@ def fetch_via_flaresolverr(url: str, retries: int = 3) -> str:
     if retries < 1:
         raise ValueError("retries 必须大于 0")
     endpoint = FLARESOLVERR_URL.rstrip("/") + "/v1"
-    # delay：页面加载完成后额外等待的秒数。
-    # 目标页面刚打开时显示旧数据占位，稍后才是最新数据，默认等 2 秒再抓取。
-    payload = {"cmd": "request.get", "url": url, "maxTimeout": FLARE_MAX_TIMEOUT, "delay": FLARE_DELAY}
+    # waitInSeconds：页面加载完成后额外等待的秒数（FlareSolverr v3 参数名，
+    # 旧版 delay 参数在 v3 中已被忽略）。目标页面刚打开时显示旧数据占位，
+    # 稍后才是最新数据，默认等 2 秒再抓取。
+    payload = {"cmd": "request.get", "url": url, "maxTimeout": FLARE_MAX_TIMEOUT, "waitInSeconds": FLARE_DELAY}
     last_err = "未知错误"
 
     for attempt in range(1, retries + 1):
