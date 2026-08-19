@@ -69,6 +69,7 @@ RUN_ONCE = os.getenv("RUN_ONCE", "false").strip().lower() in {"1", "true", "yes"
 DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in {"1", "true", "yes", "on"}
 HTTP_TIMEOUT = _env_int("HTTP_TIMEOUT", 90)
 FLARE_MAX_TIMEOUT = _env_int("FLARE_MAX_TIMEOUT", 60000)
+FLARE_DELAY = _env_int("FLARE_DELAY", 2)
 
 TENCENT_SECRET_ID = os.getenv("TENCENT_SECRET_ID", "").strip()
 TENCENT_SECRET_KEY = os.getenv("TENCENT_SECRET_KEY", "").strip()
@@ -151,6 +152,8 @@ def validate_config() -> None:
         raise ConfigurationError("HTTP_TIMEOUT 必须大于 0")
     if FLARE_MAX_TIMEOUT <= 0:
         raise ConfigurationError("FLARE_MAX_TIMEOUT 必须大于 0")
+    if FLARE_DELAY < 0:
+        raise ConfigurationError("FLARE_DELAY 不能小于 0")
     if FLARE_MAX_TIMEOUT > HTTP_TIMEOUT * 1000:
         raise ConfigurationError("FLARE_MAX_TIMEOUT(毫秒) 不能超过 HTTP_TIMEOUT(秒) * 1000")
     if not 1 <= TTL <= 604800:
@@ -198,7 +201,9 @@ def fetch_via_flaresolverr(url: str, retries: int = 3) -> str:
     if retries < 1:
         raise ValueError("retries 必须大于 0")
     endpoint = FLARESOLVERR_URL.rstrip("/") + "/v1"
-    payload = {"cmd": "request.get", "url": url, "maxTimeout": FLARE_MAX_TIMEOUT}
+    # delay：页面加载完成后额外等待的秒数。
+    # 目标页面刚打开时显示旧数据占位，稍后才是最新数据，默认等 2 秒再抓取。
+    payload = {"cmd": "request.get", "url": url, "maxTimeout": FLARE_MAX_TIMEOUT, "delay": FLARE_DELAY}
     last_err = "未知错误"
 
     for attempt in range(1, retries + 1):

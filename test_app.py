@@ -67,9 +67,11 @@ class FetchViaFlareSolverrTests(unittest.TestCase):
             "status": "ok",
             "solution": {"response": "<html><body><table></table></body></html>"},
         }
-        with patch.object(app.requests, "post", return_value=response):
+        with patch.object(app.requests, "post", return_value=response) as post:
             html = app.fetch_via_flaresolverr("http://example.com", retries=1)
         self.assertIn("<html>", html)
+        post.assert_called_once()
+        self.assertEqual(post.call_args.kwargs["json"]["delay"], app.FLARE_DELAY)
 
     def test_retries_then_raises(self):
         response = Mock()
@@ -252,6 +254,7 @@ class ConfigValidationTests(unittest.TestCase):
         ("INTERVAL_MINUTES", 10),
         ("HTTP_TIMEOUT", 90),
         ("FLARE_MAX_TIMEOUT", 60000),
+        ("FLARE_DELAY", 2),
         ("TTL", 600),
         ("FLARESOLVERR_URL", "http://flaresolverr:8191"),
         ("TARGET_URL", "https://api.uouin.com/cloudflare.html"),
@@ -313,6 +316,11 @@ class ConfigValidationTests(unittest.TestCase):
 
     def test_flare_timeout_cross_check(self):
         with patch.object(app, "FLARE_MAX_TIMEOUT", 120000):
+            with self.assertRaises(app.ConfigurationError):
+                app.validate_config()
+
+    def test_flare_delay_negative_rejected(self):
+        with patch.object(app, "FLARE_DELAY", -1):
             with self.assertRaises(app.ConfigurationError):
                 app.validate_config()
 

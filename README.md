@@ -205,6 +205,7 @@ docker compose up -d
 | `LOG_LEVEL` | `INFO` | 否 | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `HTTP_TIMEOUT` | `90` | 否 | HTTP 请求超时（秒） |
 | `FLARE_MAX_TIMEOUT` | `60000` | 否 | FlareSolverr 单次浏览器请求最大超时（毫秒） |
+| `FLARE_DELAY` | `2` | 否 | 页面加载完成后额外等待的秒数，避免抓到旧数据占位 |
 | `FLARESOLVERR_URL` | `http://flaresolverr:8191` | 否 | FlareSolverr 服务地址 |
 | `DNSPOD_ENDPOINT` | `https://dnspod.tencentcloudapi.com` | 否 | DNSPod API 地址，生产环境不要修改 |
 | `DNSPOD_ALLOW_HTTP` | `false` | 否 | 仅本地集成测试使用；`true` 才允许 `DNSPOD_ENDPOINT` 使用 http |
