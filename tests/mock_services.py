@@ -51,6 +51,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self) -> None:
+        # FlareSolverr 通过 GET 抓取目标页面
+        body = HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length)

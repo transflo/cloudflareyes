@@ -8,6 +8,13 @@ services:
     environment:
       - LOG_LEVEL=info
       - TZ=Asia/Shanghai
+    healthcheck:
+      # 端口真正开始监听后才算健康，避免更新器提前请求导致 Connection refused
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8191), 3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
 
   cf-dns-updater:
     # 两种部署方式：
@@ -19,7 +26,8 @@ services:
     container_name: cf-dns-updater
     restart: unless-stopped
     depends_on:
-      - flaresolverr
+      flaresolverr:
+        condition: service_healthy
     env_file:
       - .env
     environment:
