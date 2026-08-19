@@ -10,6 +10,11 @@ services:
       - TZ=Asia/Shanghai
 
   cf-dns-updater:
+    # 两种部署方式：
+    #   1) 本地构建：docker compose up -d --build
+    #   2) Docker Hub 镜像：在 .env 中设置 DOCKER_IMAGE=<DockerHub用户名>/cloudflareyes:latest，
+    #      然后 docker compose pull && docker compose up -d（或删除 build: . 行直接拉取）
+    image: ${DOCKER_IMAGE:-transflo/cloudflareyes:latest}
     build: .
     container_name: cf-dns-updater
     restart: unless-stopped
@@ -21,4 +26,5 @@ services:
       - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://flaresolverr:8191}
       - TARGET_URL=${TARGET_URL:-https://api.uouin.com/cloudflare.html}
     # 可选: 先跑一次验证, 再改成定时循环
-    # command: ["python", "app.py"]
+    # - RUN_ONCE=true
+    # - DRY_RUN=true

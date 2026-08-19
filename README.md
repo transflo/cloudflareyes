@@ -65,6 +65,21 @@ docker compose logs -f cf-dns-updater
 
 程序会直接按当前 `.env` 配置持续运行。只有在需要单次执行或预览变更时，才按需设置 `RUN_ONCE=true` 或 `DRY_RUN=true`，无需额外切换部署流程。
 
+### 4. 使用 Docker Hub 镜像（可选）
+
+项目发布到 Docker Hub 后，也可以直接用现成镜像部署，无需本地构建：
+
+```bash
+# 在 .env 中指定镜像（或直接修改 docker-compose.yml 的 image: 行）
+DOCKER_IMAGE=<DockerHub用户名>/cloudflareyes:latest
+
+docker compose pull cf-dns-updater
+docker compose up -d
+```
+
+如果确定只使用镜像、不在本地构建，也可以把 `docker-compose.yml` 中 `cf-dns-updater` 服务的 `build: .` 行删掉，只保留 `image:`。
+
+
 ## 配置项
 
 | 变量 | 默认值 | 必填 | 说明 |
@@ -86,6 +101,7 @@ docker compose logs -f cf-dns-updater
 | `DNSPOD_ENDPOINT` | `https://dnspod.tencentcloudapi.com` | 否 | DNSPod API 地址；生产环境不要修改 |
 | `DNSPOD_ALLOW_HTTP` | `false` | 否 | 仅本地集成测试使用；设为 `true` 才允许 `DNSPOD_ENDPOINT` 使用 http（生产环境请保持默认） |
 | `TARGET_URL` | `https://api.uouin.com/cloudflare.html` | 否 | 优选 IP 页面地址 |
+| `DOCKER_IMAGE` | `transflo/cloudflareyes:latest` | 否 | compose 使用的镜像名；从 Docker Hub 拉取时改为 `<你的用户名>/cloudflareyes:latest` |
 
 ## DNSPod 线路说明
 
@@ -100,6 +116,42 @@ DNSPod 的分线路记录通常要求同一主机记录先存在一条「默认�
 - `DNSPOD_ENDPOINT` 强制使用 HTTPS，避免腾讯云 API 签名头在网络上明文传输；本地 mock 测试需显式设置 `DNSPOD_ALLOW_HTTP=true`。
 - 程序只接受公网 IPv4（自动过滤内网、回环、链路本地、保留/组播地址），避免第三方页面把非公网地址写入 DNS。
 - 数据源（默认 `api.uouin.com`）是第三方页面，页面被篡改即等同于攻击者可以改写你的解析记录，请确认来源可信并关注页面变化。
+
+## 发布到 Docker Hub
+
+### 手动发布
+
+```bash
+docker build -t <DockerHub用户名>/cloudflareyes:latest .
+docker tag <DockerHub用户名>/cloudflareyes:latest <DockerHub用户名>/cloudflareyes:v1.0.0
+docker login        # 推荐使用 Access Token，而不是账号密码
+docker push <DockerHub用户名>/cloudflareyes:latest
+docker push <DockerHub用户名>/cloudflareyes:v1.0.0
+```
+
+### 自动发布（GitHub Actions）
+
+仓库已内置 `.github/workflows/docker-publish.yml`：
+
+- 触发：推送到 `main`、推送 `v*` 标签，或手动运行 `workflow_dispatch`；
+- 使用 Buildx 构建 `linux/amd64` 与 `linux/arm64` 双架构并推送到 Docker Hub；
+- 镜像名 = `${{ secrets.DOCKERHUB_USERNAME }}/cloudflareyes`。
+
+首次使用前需要：
+
+1. 在 [Docker Hub](https://hub.docker.com) 创建仓库 `cloudflareyes`；
+2. 在 Docker Hub 账号设置中生成 Access Token；
+3. 在 GitHub 仓库 Settings → Secrets and variables → Actions 中添加：
+   - `DOCKERHUB_USERNAME`：Docker Hub 用户名；
+   - `DOCKERHUB_TOKEN`：上一步生成的 Access Token；
+4. 推送 tag 触发发布：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+发布完成后即可按「使用 Docker Hub 镜像」一节部署。
 
 ## 本地测试
 
@@ -203,3 +255,4 @@ docker compose logs -f cf-dns-updater
 - `.env.example`：配置模板；
 - `requirements.txt`：Python 依赖。
 - `tests/mock_services.py`：本地 Docker 集成测试用的 FlareSolverr/DNSPod mock 服务。
+- `.github/workflows/docker-publish.yml`：自动构建并推送到 Docker Hub 的 GitHub Actions 工作流。
